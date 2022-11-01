@@ -1,0 +1,105 @@
+import boto3
+import csv
+from datetime import datetime
+from datetime import timedelta
+import pandas as pd
+from botocore.config import Config
+
+# Code below allows us to pass in a unique config with each request, to define the desired region and other parameters
+
+my_config = Config(
+    region_name = input("\nWhat region would you like to run this request in?:\n"),
+    signature_version = 'v4',
+    retries = {
+        'max_attempts': 5,
+        'mode': 'standard'
+    }
+)
+
+def get_instances():
+    client = boto3.client("ec2", config=my_config)
+
+    response = client.describe_instances()
+    response_type = client.describe_instance_types()
+
+    if response["Reservations"]:
+        return response["Reservations"]
+    else:
+        print("No instances found")
+        return []
+
+
+def get_metrics(
+    namespace: str,
+    metric_name: str,
+    start,
+    end,
+    period: int,
+    statistics: list,
+    dimensions: list,
+):
+    client = boto3.client("cloudwatch", config=my_config)
+
+    response = client.get_metric_statistics(
+        Namespace=namespace,
+        MetricName=metric_name,
+        StartTime=start,
+        EndTime=end,
+        Period=period,
+        Statistics=statistics,
+        Dimensions=dimensions,
+    )
+
+    return response
+
+#Method of authentication
+
+account_number = boto3.client("sts").get_caller_identity().get("Account")
+
+metrics_list = []
+
+reservations = get_instances()
+
+end = datetime.today()
+start = end - timedelta(days=30)
+for reservation in reservations:
+    for instance in reservation["Instances"]:
+        instance_id = instance["InstanceId"]
+
+        print(instance_id)
+
+        metrics = get_metrics(
+            "AWS/EC2",
+            "CPUUtilization",
+            start,
+            end,
+            3600,
+            ["Average", "Maximum"],
+            [{"Name": "InstanceId", "Value": instance_id}],
+        )
+
+        for metric in metrics["Datapoints"]:
+            metric_dict = {}
+            metric_dict.update(
+                {
+                    "InstanceId": instance_id,
+                    "Timestamp": metric["Timestamp"],
+                    "CPUAverage": metric["Average"],
+                    "CPUMaximum": metric["Maximum"],
+                }
+            )
+
+            metrics_list.append(metric_dict)
+
+
+df = pd.DataFrame(metrics_list)
+
+df.to_csv(
+    f"C:\Temp\{account_number}-Instance-Metrics.csv",
+    index=False,
+    sep="\t",
+    quoting=csv.QUOTE_NONE,
+    escapechar="\\",
+)
+
+print(df)
